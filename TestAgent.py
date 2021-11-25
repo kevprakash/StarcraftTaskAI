@@ -1,10 +1,6 @@
 import numpy
-import numpy as np
 from pysc2.agents import base_agent
 from pysc2.lib import actions
-import Utility as util
-import torch
-from pysc2.lib import static_data
 
 
 # python -m pysc2.bin.agent --map MoveToBeacon --agent TestAgent.TestAgent --feature_screen_size 64,64
@@ -17,7 +13,6 @@ from pysc2.lib import static_data
 class TestAgent(base_agent.BaseAgent):
     def step(self, obs):
         super(TestAgent, self).step(obs)
-
 
         function_id = numpy.random.choice(obs.observation.available_actions)
         args = [[numpy.random.randint(0, size) for size in arg.sizes]

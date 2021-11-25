@@ -97,35 +97,63 @@ class CGRULayer(torch.nn.Module):
             if self.returnSequence:
                 hSeq.append(h)
 
-        return hSeq if self.returnSequence else h
+        return torch.stack(hSeq) if self.returnSequence else h
 
 
 class CGRUPolicyModel(torch.nn.Module):
-    def __init__(self, channels, inputChannels=49, kernelSize=3, flatten=True):
+    def __init__(self):
         super().__init__()
-        self.layers = nn.ModuleList()
-        if len(channels) > 1:
-            self.layers.append(CGRULayer(inputChannels, channels[0], kernelSize=kernelSize, returnSequence=True))
-        else:
-            self.layers.append(CGRULayer(inputChannels, channels[0], kernelSize=kernelSize, returnSequence=False))
-        for i in range(1, len(channels) - 1):
-            self.layers.append(CGRULayer(channels[i-1], channels[i], kernelSize=kernelSize, returnSequence=True))
-        if len(channels) > 1:
-            self.layers.append(CGRULayer(channels[-2], channels[-1], kernelSize=kernelSize, returnSequence=False))
-        self.flatten = flatten
+
+        self.CGRUScreen1 = CGRULayer(27, 16, kernelSize=5, returnSequence=True)
+        self.CGRUScreen2 = CGRULayer(16, 32, kernelSize=3, returnSequence=False)
+        self.CGRUMM1 = CGRULayer(11, 16, kernelSize=5, returnSequence=True)
+        self.CGRUMM2 = CGRULayer(16, 32, kernelSize=5, returnSequence=False)
+        self.fullyConnected = nn.Linear(64 * 64 * (32 + 32 + 11), 256)
+
+        self.valueEstimate = nn.Linear(256, 1)
+        self.actionScores = nn.Linear(256, 573)
+
+        self.argLayers = nn.ModuleList()
+
+        for _ in range(3):
+            self.argLayers.append(nn.Conv2d((32 + 32 + 11), 1, (1, 1), stride=(1, 1), padding=(0, 0)))
+
+        for outLen in [2, 5, 10, 4, 2, 4, 500, 4, 10, 500]:
+            self.argLayers.append(nn.Linear(256, outLen))
+
+        for p in self.parameters():
+            if len(p.shape) > 1:
+                I.xavier_normal_(p)
+            else:
+                I.normal_(p, std=0.1)
 
     def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        if self.flatten:
-            maxPool = F.max_pool2d(x, kernel_size=x.size()[2:])
-            maxPool = torch.flatten(maxPool)
-            return F.softmax(maxPool, dim=-1)
-        else:
-            x = torch.squeeze(x)
-            flat = torch.flatten(x)
-            sm = F.softmax(flat, dim=-1)
-            return torch.reshape(sm, x.shape)
+        featureScreen = x[0]
+        minimap = x[1]
+        playerData = x[2]
+
+        screenRepresentation = nn.ReLU()(self.CGRUScreen2(self.CGRUScreen1(featureScreen)))
+        MMRepresentation = nn.ReLU()(self.CGRUMM2(self.CGRUMM1(minimap)))
+        stateRepresentation = torch.cat((screenRepresentation, MMRepresentation, playerData), dim=1)
+        flattenRepresentation = nn.ReLU()(self.fullyConnected(torch.flatten(stateRepresentation)))
+
+        value = self.valueEstimate(flattenRepresentation)
+        policy = nn.Softmax(dim=-1)(self.actionScores(flattenRepresentation))
+
+        args = []
+        for i in range(3):
+            convPolicy = self.argLayers[i](stateRepresentation)
+            convPolicy = torch.squeeze(convPolicy)
+            flatConvPolicy = torch.flatten(convPolicy)
+            sm = nn.Softmax(dim=-1)(flatConvPolicy)
+            args.append(torch.reshape(sm, convPolicy.shape))
+
+        for i in range(3, len(self.argLayers)):
+            FCPolicy = self.argLayers[i](flattenRepresentation)
+            FCPolicy = nn.Softmax(dim=-1)(FCPolicy)
+            args.append(FCPolicy)
+
+        return value, policy, args
 
 
 class UnifiedModel(torch.nn.Module):
