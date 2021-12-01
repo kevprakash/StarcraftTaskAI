@@ -14,6 +14,9 @@ class TestAgent(base_agent.BaseAgent):
     def step(self, obs):
         super(TestAgent, self).step(obs)
 
+        print(obs.observation['map_name'])
+        print(1/0)
+
         function_id = numpy.random.choice(obs.observation.available_actions)
         args = [[numpy.random.randint(0, size) for size in arg.sizes]
                 for arg in self.action_spec.functions[function_id].args]

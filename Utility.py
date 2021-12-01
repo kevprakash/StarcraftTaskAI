@@ -41,15 +41,20 @@ def argSelect(argScores, randomSelect):
 
 
 def calculateDiscountedScoreDeltas(scores, discountFactor=0.95):
-    deltas = [0]
-    for i in range(1, len(scores)):
-        deltas.append(scores[i] - scores[i-1])
+    deltas = calculateScoreDeltas(scores)
     discountedScores = [deltas[-1]]
     for i in range(1, len(scores)):
         ds = discountedScores[i - 1] * discountFactor + deltas[-(i + 1)]
         discountedScores.append(ds)
     discountedScores.reverse()
     return discountedScores
+
+
+def calculateScoreDeltas(scores):
+    deltas = [0]
+    for i in range(1, len(scores)):
+        deltas.append(scores[i] - scores[i - 1])
+    return deltas
 
 
 def policyActionSelect(policy, availableActions):
