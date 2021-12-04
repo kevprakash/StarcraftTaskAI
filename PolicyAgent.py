@@ -7,7 +7,7 @@ import Model
 import Utility as util
 import math
 import os
-from statistics import mean
+from statistics import mean, variance
 from pysc2.lib import static_data
 
 
@@ -217,7 +217,11 @@ class UnifiedAgent(base_agent.BaseAgent):
             self.mapName = obs.observation['map_name']
             self.load()
 
-        # networkInput = self.getNetworkInput(obs)
+        if self.prevEp < self.episodes:
+            self.onNewEpisode()
+            self.prevEp = self.episodes
+            self.ep += 1
+
         networkInput = self.getNetworkInput(obs)
 
         _, actionPolicy, argPolicies = self.model(networkInput)
@@ -230,10 +234,6 @@ class UnifiedAgent(base_agent.BaseAgent):
             npArgPolicy = argumentPolicy.detach().clone().cpu().numpy()
             args.append(util.policyArgSelect(npArgPolicy))
 
-        if self.prevEp < self.episodes:
-            self.onNewEpisode()
-            self.prevEp = self.episodes
-            self.ep += 1
         # self.screens.append(networkInput.detach().cpu().numpy())
         self.screens.append(util.detachAllTensors(self.getNetworkInput(obs)))
         self.selectedActions.append(selectedAction)
@@ -375,8 +375,10 @@ class CGRUAgent(base_agent.BaseAgent):
         self.scores = []
         self.rewards = []
         self.ep = 1
-        self.prevEp = 0
+        self.prevEp = 1
         self.mapName = None
+
+        self.epScore = []
 
     def step(self, obs):
         super(CGRUAgent, self).step(obs)
@@ -384,6 +386,11 @@ class CGRUAgent(base_agent.BaseAgent):
         if self.mapName is None:
             self.mapName = obs.observation['map_name']
             self.load()
+
+        if self.prevEp < self.episodes:
+            self.onNewEpisode()
+            self.prevEp = self.episodes
+            self.ep += 1
 
         screen, minimap, playerData = self.getNetworkInput(obs)
         self.screens.append(screen)
@@ -405,10 +412,6 @@ class CGRUAgent(base_agent.BaseAgent):
             npArgPolicy = argumentPolicy.detach().clone().cpu().numpy()
             args.append(util.policyArgSelect(npArgPolicy))
 
-        if self.prevEp < self.episodes:
-            self.onNewEpisode()
-            self.prevEp = self.episodes
-            self.ep += 1
         # self.screens.append(networkInput.detach().cpu().numpy())
 
         self.selectedActions.append(selectedAction)
@@ -422,13 +425,15 @@ class CGRUAgent(base_agent.BaseAgent):
         # Training
         if len(self.scores) > 1:
 
-            scoreDiff = self.scores[-1] - self.scores[0]
-            scoreRate = (scoreDiff + 0.0)/len(self.scores)
-            print("Score rate for the episode: " + str(scoreRate))
+            self.epScore.append(float(self.scores[-1]))
+            # scoreDiff = self.scores[-1] - self.scores[0]
+            # scoreRate = (scoreDiff + 0.0)/len(self.scores)
+            # print("Score rate for the episode: " + str(scoreRate))
 
             self.load()
             # self.scores.append(1000 * (self.rewards[-1] - self.rewards[-2]) + self.scores[-1])
             G = util.calculateDiscountedScoreDeltas(self.scores)
+            # G = util.calculateScoreDeltas(self.scores)
             valueLossTracker = []
             policyScoreTracker = []
             uncertaintyTracker = []
@@ -437,7 +442,12 @@ class CGRUAgent(base_agent.BaseAgent):
                 screenBuffer = torch.stack(util.moveAllToCuda(self.screens[startIndex:index+1]))
                 MMBuffer = torch.stack(util.moveAllToCuda(self.minimaps[startIndex:index+1]))
 
+                # screenBuffer2 = torch.stack(util.moveAllToCuda(self.screens[startIndex+1:index + 2]))
+                # MMBuffer2 = torch.stack(util.moveAllToCuda(self.minimaps[startIndex+1:index + 2]))
+
                 valueApprox, actionPolicy, argPolicies = self.model([screenBuffer, MMBuffer, self.playerData[index].cuda()])
+                # valueApprox2, _, _ = self.model([screenBuffer2, MMBuffer2, self.playerData[index + 1].cuda()])
+                # valueDiff = (G[index] + 0.95 * valueApprox2) - valueApprox
                 valueDiff = G[index] - valueApprox
                 valueLossTracker.append(valueDiff.item() ** 2)
 
@@ -460,14 +470,14 @@ class CGRUAgent(base_agent.BaseAgent):
                 for apc in argPickChance:
                     combinedPickChance = combinedPickChance * apc
 
-                policyScore = valueDiff * combinedPickChance
+                policyScore = valueDiff.detach() * torch.log10(combinedPickChance)
                 policyScoreTracker.append(policyScore.item())
                 uncertaintyTracker.append(entropy.item()/maxEntropy.item())
                 valueLoss = 0.5 * valueDiff**2
 
                 numArgs = len(self.action_spec.functions[self.selectedActions[index]].args) + 1
 
-                modelLoss = (-1 * policyScore) + (1 * valueLoss) + ((0.001 ** numArgs) * -entropy)
+                modelLoss = (-1 * policyScore) + (1 * valueLoss) + (0.01 * -entropy)
                 # modelLoss = -modelLoss
 
                 self.optimizer.zero_grad()
@@ -498,6 +508,10 @@ class CGRUAgent(base_agent.BaseAgent):
         self.selectedActions = []
         self.selectedArgs = []
         self.scores = []
+
+        if len(self.epScore) > 1:
+            print("Average score: {:.4f} | Variance: {:.4f}".format(mean(self.epScore), variance(self.epScore)))
+
         return
 
     def getNetworkInput(self, obs):
